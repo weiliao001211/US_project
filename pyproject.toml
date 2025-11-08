@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chirpy"
+description = "A Flexible Python Framework for Full-Wave Inversion in Ultrasound Tomography"
+version = "0.0.2"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Wei Liao"},
+    {name = "Marta Betcke"},
+    {name = "Elliott Macneil", email = "ucabem1@ucl.ac.uk"},
+]
+keywords = ["ultrasound", "tomography", "inversion", "medical-imaging"]
+dependencies = ["k-Wave-python"]
+
+
+[project.optional-dependencies]
+# GPU acceleration (works on Linux/Windows with CUDA)
+gpu = [
+    "cupy>=13.6.0",
+]
+
+# Development dependencies
+dev = [
+    "pytest",
+    "ruff",
+    "pre-commit",
+    "nbconvert"
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C"]
+ignore = ["E501"]
+#extend-include = ["*.ipynb"]
+
+[tool.pytest.ini_options]
+addopts = "-ra -q"
+markers = [
+  "slow: long-running integration tests",
+  "kwave: requires k-Wave binary available",
+  "gpu: requires CUDA/CuPy",
+]
+filterwarnings = [
+  "ignore::UserWarning",
+  "ignore::DeprecationWarning",
+]

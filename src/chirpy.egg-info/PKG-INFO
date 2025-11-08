@@ -1,3 +1,21 @@
+Metadata-Version: 2.4
+Name: chirpy
+Version: 0.0.2
+Summary: A Flexible Python Framework for Full-Wave Inversion in Ultrasound Tomography
+Author: Wei Liao, Marta Betcke
+Author-email: Elliott Macneil <ucabem1@ucl.ac.uk>
+Keywords: ultrasound,tomography,inversion,medical-imaging
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: k-Wave-python
+Provides-Extra: gpu
+Requires-Dist: cupy>=13.6.0; extra == "gpu"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: pre-commit; extra == "dev"
+Requires-Dist: nbconvert; extra == "dev"
+
 # Chirpy 🦜
 
 A Flexible Python Framework for Full-Wave Inversion in Ultrasound Tomography

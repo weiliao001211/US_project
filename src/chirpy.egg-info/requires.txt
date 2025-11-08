@@ -1,0 +1,10 @@
+k-Wave-python
+
+[dev]
+pytest
+ruff
+pre-commit
+nbconvert
+
+[gpu]
+cupy>=13.6.0
