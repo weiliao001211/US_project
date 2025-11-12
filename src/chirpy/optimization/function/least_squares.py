@@ -184,8 +184,7 @@ class NonlinearLS(Function):
             * When encodings are available and `sync_value=True`, reuse those
               encodings to ensure consistency with the most recent gradient call.
             * Otherwise, draw fresh random encodings and aggregate across K trials.
-          In both cases the aggregation is a **sum** over trials (to match the gradient
-          path), not an average.
+          In both cases the aggregation is a **average** over trials
         - Otherwise (deterministic path), compute a single forward and residual.
 
         Parameters
@@ -198,7 +197,7 @@ class NonlinearLS(Function):
         Returns
         -------
         float
-            Objective value Φ(m) (or the K-sum thereof when encoding is used).
+            Objective value Φ(m) (or the K-average thereof when encoding is used).
 
         Side Effects
         ------------
@@ -212,20 +211,30 @@ class NonlinearLS(Function):
           overwritten and then restored.
         """
         use_enc = bool(getattr(self._op, "use_encoding", False))
-        K = getattr(self._ge, "_K", None) or 0
-        has_K = K > 1
 
-        if use_enc and has_K:
-            # if sync_value=True, reuse last encodings if available
-            enc_list = self._ge.get_last_encodings()
-            if enc_list:
+        if use_enc:
+            enc_list = (
+                self._ge.get_last_encodings()
+                if hasattr(self._ge, "get_last_encodings")
+                else None
+            )
+
+            if self._sync_value and self._reuse_last and enc_list:
                 mis = self._value_reuse_last(m, enc_list, kind=kind)
                 self._last_misfit = mis
                 return mis
+
+            K_grad = getattr(self._ge, "_K", None) or 0
+            if self._K_value is not None:
+                K_eff = int(self._K_value)
+            elif K_grad > 0:
+                K_eff = int(K_grad)
             else:
-                mis = self._value_fresh_K(m, K, kind=kind)
-                self._last_misfit = mis
-                return mis
+                K_eff = 1
+
+            mis = self._value_fresh_K(m, K_eff, kind=kind)
+            self._last_misfit = mis
+            return mis
 
         # deterministic fallback
         r = self.residual(m, kind=kind)
@@ -240,11 +249,11 @@ class NonlinearLS(Function):
 
         Behavior
         --------
-        - Encoding path (operator.use_encoding and gradient evaluator has K>1):
+        - Encoding path (operator.use_encoding is True):
             Calls `grad_eval.evaluate(m, None, kind=...)`. The evaluator is expected
             to use its internal encodings and residual callback to keep the misfit
             cache in sync.
-        - Deterministic path (no encoding or K<=1):
+        - Deterministic path (encoding disabled):
             Ensures a consistent residual for the given (m, kind), forms q = w · r,
             sets `self._last_misfit = ½ ⟨q, q⟩`, and calls
             `grad_eval.evaluate(m, q, kind=...)`.
@@ -271,9 +280,8 @@ class NonlinearLS(Function):
         - The gradient evaluator may ignore `q` on the encoding path (it receives None).
         """
         use_enc = bool(getattr(self._op, "use_encoding", False))
-        has_K = (getattr(self._ge, "_K", None) or 0) > 1
 
-        if use_enc and has_K:
+        if use_enc:
             g = self._ge.evaluate(m, None, kind=kind)
             if self.normalize:
                 mval = np.max(np.abs(g))
@@ -282,7 +290,7 @@ class NonlinearLS(Function):
             # The "misfit" is maintained in the encoding path by either the "residual_callback" or the "value()".
             return g
 
-        # non-encoding or K<=1 path
+        # deterministic path (encoding disabled)
         # If the cache does not exist or the kind is inconsistent, recalculate the residual.
         if (
             self._cache is None
@@ -324,7 +332,7 @@ class NonlinearLS(Function):
                 Fm = op.forward(m, kind=kind)
                 r = Fm - op.get_field("obs_data")
                 vals.append(0.5 * np.vdot(r * self._w, r * self._w).real)
-            return float(np.sum(vals))  # consistent with gradient K-sum
+            return float(np.mean(vals))  # consistent with gradient K-average
         finally:
             op.enc_weights, op.enc_delays = wbak, dbak
             if getattr(op, "use_encoding", False) and wbak is not None:
@@ -347,7 +355,7 @@ class NonlinearLS(Function):
                 Fm = op.forward(m, kind=kind)
                 r = Fm - op.get_field("obs_data")
                 vals.append(0.5 * np.vdot(r * self._w, r * self._w).real)
-            return float(np.sum(vals))
+            return float(np.mean(vals))
         finally:
             op.enc_weights, op.enc_delays = wbak, dbak
             if getattr(op, "use_encoding", False) and wbak is not None:
@@ -361,6 +369,24 @@ class NonlinearLS(Function):
         return 0.5 * np.vdot(rw, rw).real
 
     def cache_from_residual(self, r: np.ndarray) -> float:
-        mis = self.value_from_residual(r)
+        """
+        Compute Φ(m) = mean_k [ ½‖w · r_k‖² ] when a K-stack arrives from the
+        gradient evaluator (encoding path); otherwise ½‖w · r‖².
+        """
+        rw = r * self._w
+
+        K = getattr(self._ge, "_K", None) or 0
+        if (
+            getattr(self._op, "use_encoding", False)
+            and K > 1
+            and r.ndim >= 1
+            and r.shape[0] == K
+        ):
+            axes = tuple(range(1, rw.ndim))
+            per_k = 0.5 * np.sum(np.abs(rw) ** 2, axis=axes)  # (K,)
+            mis = float(np.mean(per_k))
+        else:
+            mis = 0.5 * np.vdot(rw, rw).real
+
         self._last_misfit = mis
         return mis
