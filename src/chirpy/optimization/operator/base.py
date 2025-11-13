@@ -8,4 +8,5 @@ class Operator(ABC):
     """Mapping **u = F(m)**"""
 
     @abstractmethod
-    def forward(self, m: np.ndarray) -> np.ndarray: ...
+    def forward(self, m: np.ndarray) -> np.ndarray:
+        ...

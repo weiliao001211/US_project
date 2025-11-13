@@ -11,4 +11,5 @@ class Optimizer(ABC):
     """
 
     @abstractmethod
-    def solve(self, fun: Function, m0: np.ndarray) -> np.ndarray: ...
+    def solve(self, fun: Function, m0: np.ndarray) -> np.ndarray:
+        ...

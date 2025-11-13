@@ -34,17 +34,30 @@ class HelmholtzOperator(Operator):
 
     # ------------------------------------------------------------------ #
     def __init__(
-            self,
-            data: AcquisitionData,
-            f_idx: int,
-            *,
-            sign_conv: int,
-            pml_alpha: float,
-            pml_size: float,
-            use_gpu: bool = False,
-            progress: Progress | None = None,
+        self,
+        data: AcquisitionData,
+        f_idx: int | None = None,
+        *,
+        freq: float | None = None,
+        sign_conv: int,
+        pml_alpha: float,
+        pml_size: float,
+        use_gpu: bool = False,
+        progress: Progress | None = None,
     ):
-        self._freq = float(data.freqs[f_idx])
+
+        if freq is not None:
+            self._freq = float(freq)
+        else:
+            if f_idx is None:
+                raise ValueError("Either `f_idx` or `freq` must be provided.")
+            try:
+                self._freq = float(data.freqs[f_idx])
+            except AttributeError:
+                raise ValueError(
+                    "AcquisitionData has no `freqs`; please pass `freq=` explicitly."
+                )
+
         self._sign = int(sign_conv)
         self._a0 = float(pml_alpha)
         self._L_PML = float(pml_size)
@@ -58,11 +71,14 @@ class HelmholtzOperator(Operator):
         )
 
         tx_keep = self._resolve_tx_keep(data, tx_array)
-        mask, rx_lin_idx = self._resolve_mask_and_gid(data, tx_array, tx_keep, lin_idx_full)
-
-        rec_f = self._resolve_observed_data(
-            data.array, f_idx, tx_keep, mask.shape[1]
+        mask, rx_lin_idx = self._resolve_mask_and_gid(
+            data, tx_array, tx_keep, lin_idx_full
         )
+
+        if data.array is not None and f_idx is not None:
+            rec_f = self._resolve_observed_data(data.array, f_idx, tx_keep, mask.shape[1])
+        else:
+            rec_f = None
 
         # --- store per-shot metadata ---------------------------------- #
         self._tx_keep = tx_keep
@@ -89,6 +105,15 @@ class HelmholtzOperator(Operator):
     # ------------------------------------------------------------------ #
     # public helpers
     # ------------------------------------------------------------------ #
+    @property
+    def frequency(self) -> float:
+        return self._freq
+
+    @frequency.setter
+    def frequency(self, value: float) -> None:
+        self._freq = float(value)
+        self._cache = None
+
     def get_field(self, name: str):
         """
         Read-only access to cached tensors/scalars.
@@ -145,7 +170,7 @@ class HelmholtzOperator(Operator):
             raise RuntimeError("forward() must be called first")
 
         with self._progress.task(
-                total=1, desc="Helmholtz adjoint", unit="solve"
+            total=1, desc="Helmholtz adjoint", unit="solve"
         ) as upd:
             ADJ_WF, VSRC = self._solve(src, adjoint=True)
             upd(1)
@@ -197,7 +222,7 @@ class HelmholtzOperator(Operator):
 
         # Forward solve progress (coarse)
         with self._progress.task(
-                total=1, desc="Helmholtz forward", unit="solve"
+            total=1, desc="Helmholtz forward", unit="solve"
         ) as upd:
             WF, VSRC = HS.solve(SRC, adjoint=False)
             upd(1)
@@ -225,7 +250,7 @@ class HelmholtzOperator(Operator):
     # metadata helpers
     # ------------------------------------------------------------------ #
     def _resolve_element_indices(
-            self, data, tx_array, grid
+        self, data, tx_array, grid
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         computed = None
         if tx_array is not None and grid is not None:
@@ -283,15 +308,17 @@ class HelmholtzOperator(Operator):
                 )
 
         if tx_keep.ndim != 1 or tx_keep.size == 0:
-            raise ValueError("tx_keep must be a non-empty 1-D array of transmitter indices.")
+            raise ValueError(
+                "tx_keep must be a non-empty 1-D array of transmitter indices."
+            )
         return tx_keep
 
     def _resolve_mask_and_gid(
-            self,
-            data,
-            tx_array,
-            tx_keep: np.ndarray,
-            lin_idx_full: np.ndarray,
+        self,
+        data,
+        tx_array,
+        tx_keep: np.ndarray,
+        lin_idx_full: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         elem_mask = data.ctx.get("elem_mask")
         if elem_mask is not None:
@@ -329,7 +356,7 @@ class HelmholtzOperator(Operator):
 
     @staticmethod
     def _resolve_observed_data(
-            array: np.ndarray | None, f_idx: int, tx_keep: np.ndarray, n_rx: int
+        array: np.ndarray | None, f_idx: int, tx_keep: np.ndarray, n_rx: int
     ) -> np.ndarray | None:
         n_tx = tx_keep.size
         if array is None:
@@ -354,7 +381,9 @@ class HelmholtzOperator(Operator):
             arr = arr[tx_keep]
         elif arr.shape[0] != n_tx:
             if arr.shape[0] < n_tx:
-                raise ValueError("Acquisition array has fewer transmitters than required")
+                raise ValueError(
+                    "Acquisition array has fewer transmitters than required"
+                )
             arr = arr[:n_tx]
 
         return arr.astype(np.complex128, copy=False)
