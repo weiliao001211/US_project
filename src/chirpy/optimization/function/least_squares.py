@@ -370,8 +370,8 @@ class NonlinearLS(Function):
 
     def cache_from_residual(self, r: np.ndarray) -> float:
         """
-        Compute Φ(m) = mean_k [ ½‖w · r_k‖² ] when a K-stack arrives from the
-        gradient evaluator (encoding path); otherwise ½‖w · r‖².
+        Compute Φ(m) = mean_k [ 1/2‖w · r_k‖^2 ] when a K-stack arrives from the
+        gradient evaluator (encoding path); otherwise 1/2‖w · r‖^2.
         """
         rw = r * self._w
 

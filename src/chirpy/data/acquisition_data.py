@@ -394,7 +394,7 @@ class AcquisitionData(DataContainer):
             y = sfft.irfft(self.array, n=n, axis=-1)
         else:
             y = sfft.ifft(self.array, n=n, axis=-1)
-        y = np.real_if_close(y, tol=1e3)  # 去掉数值虚部
+        y = np.real_if_close(y, tol=1e3)
 
         # make time axis
         t = np.arange(n, dtype=float) * dt

@@ -1,4 +1,5 @@
 """
+(removed, function has been moved into geometry configurator)
 UFWI.processors.acceptance_mask
 ======================================
 

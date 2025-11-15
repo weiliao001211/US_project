@@ -27,6 +27,7 @@ from chirpy.optimization.operator.functions.HelmholtzSolver import (
     HelmholtzSolver,
 )  # internal only
 from chirpy.utils.progress import Progress, ProgressConfig
+from chirpy.geometry import GeometryConfigurator
 
 
 class HelmholtzOperator(Operator):
@@ -35,7 +36,8 @@ class HelmholtzOperator(Operator):
     # ------------------------------------------------------------------ #
     def __init__(
         self,
-        data: AcquisitionData,
+        data: AcquisitionData | None,
+        geom: GeometryConfigurator,
         f_idx: int | None = None,
         *,
         freq: float | None = None,
@@ -46,51 +48,47 @@ class HelmholtzOperator(Operator):
         progress: Progress | None = None,
     ):
 
+        self._geom = geom
+
         if freq is not None:
             self._freq = float(freq)
         else:
-            if f_idx is None:
-                raise ValueError("Either `f_idx` or `freq` must be provided.")
-            try:
-                self._freq = float(data.freqs[f_idx])
-            except AttributeError:
-                raise ValueError(
-                    "AcquisitionData has no `freqs`; please pass `freq=` explicitly."
-                )
+            if f_idx is None or data is None or not hasattr(data, "freqs"):
+                raise ValueError("Either `freq` must be provided, or `data` with `freqs` and `f_idx`.")
+            self._freq = float(data.freqs[f_idx])
 
         self._sign = int(sign_conv)
         self._a0 = float(pml_alpha)
         self._L_PML = float(pml_size)
 
-        # --- gather geometry / indexing metadata ---------------------- #
-        tx_array = getattr(data, "tx_array", None)
-        grid = getattr(data, "grid", None)
+        # --- geometry / indexing via GeometryConfigurator ------------- #
+        # Element indices after TX/RX selection
+        tx_keep = self._geom.get_tx_elem_indices()          # (Tx,)
+        rx_lin_idx = self._geom.get_rx_lin_idx()            # (Rx,)
+        mask = self._geom.get_elem_mask()                   # (Tx, Rx)
 
-        x_idx_full, y_idx_full, lin_idx_full = self._resolve_element_indices(
-            data, tx_array, grid
-        )
+        tx_roles = self._geom.get_tx_role_indices()  # role indices for array axis 0
+        rx_roles = self._geom.get_rx_role_indices()  # role indices for array axis 1
 
-        tx_keep = self._resolve_tx_keep(data, tx_array)
-        mask, rx_lin_idx = self._resolve_mask_and_gid(
-            data, tx_array, tx_keep, lin_idx_full
-        )
+        # Grid indices for each active transmitter
+        self._x_idx, self._y_idx = self._geom.get_tx_grid_indices()
 
-        if data.array is not None and f_idx is not None:
-            rec_f = self._resolve_observed_data(data.array, f_idx, tx_keep, mask.shape[1])
+        # Observation data (optional)
+        if data is not None and data.array is not None and f_idx is not None:
+            rec_f = self._resolve_observed_data(
+                data.array, f_idx, tx_roles, rx_roles
+            )
         else:
             rec_f = None
 
         # --- store per-shot metadata ---------------------------------- #
         self._tx_keep = tx_keep
         self._mask = mask  # (Tx, Rx)
+        self._gid = rx_lin_idx  # (Rx,)
         self._REC_f = rec_f  # optional observed data
 
-        # --- geometry & indexing -------------------------------------- #
-        self._x_idx = x_idx_full[tx_keep]
-        self._y_idx = y_idx_full[tx_keep]
-        self._gid = rx_lin_idx  # (Rx,)
-
-        img_grid = data.grid
+        # --- geometry & indexing (grid coordinates) ------------------- #
+        img_grid = self._geom.grid
         self.ny, self.nx = img_grid.shape
         self._xi, self._yi = img_grid.xi, img_grid.yi
         self.n_tx, self.n_rx = mask.shape
@@ -249,116 +247,13 @@ class HelmholtzOperator(Operator):
     # ------------------------------------------------------------------ #
     # metadata helpers
     # ------------------------------------------------------------------ #
-    def _resolve_element_indices(
-        self, data, tx_array, grid
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        computed = None
-        if tx_array is not None and grid is not None:
-            attached = tx_array.attach_to_grid(grid)
-            coords = np.asarray(attached.positions, float)
-            if coords.ndim != 2:
-                raise ValueError("transducer positions must be 2-D")
-            n_elem = coords.shape[1]
-            x_idx = np.empty(n_elem, dtype=np.int64)
-            y_idx = np.empty(n_elem, dtype=np.int64)
-            for i, (x, y) in enumerate(coords.T):
-                ix, iy = grid.coord2index(float(x), float(y))
-                x_idx[i] = ix
-                y_idx[i] = iy
-            gid = np.ravel_multi_index(
-                (y_idx, x_idx), (grid.ny, grid.nx), order="F"
-            ).astype(np.int64)
-            computed = (x_idx, y_idx, gid)
-
-        def _coerce(values, fallback_idx):
-            if values is None:
-                if computed is None:
-                    raise ValueError(
-                        "HelmholtzOperator requires geometry metadata (x_idx/y_idx/grid indices)"
-                    )
-                return computed[fallback_idx]
-            arr = np.asarray(values)
-            if arr.ndim != 1:
-                raise ValueError("Geometry metadata arrays must be 1-D")
-            return arr.astype(np.int64, copy=False)
-
-        x_idx_full = _coerce(data.ctx.get("x_idx"), 0)
-        y_idx_full = _coerce(data.ctx.get("y_idx"), 1)
-        lin_idx_full = _coerce(data.ctx.get("grid_lin_idx"), 2)
-        return x_idx_full, y_idx_full, lin_idx_full
-
-    @staticmethod
-    def _resolve_tx_keep(data, tx_array) -> np.ndarray:
-        tx_keep = data.ctx.get("tx_keep")
-        if tx_keep is not None:
-            tx_keep = np.asarray(tx_keep, dtype=np.int64)
-        else:
-            if tx_array is not None:
-                if hasattr(tx_array, "is_tx") and np.any(tx_array.is_tx):
-                    tx_keep = np.nonzero(tx_array.is_tx)[0].astype(np.int64)
-                else:
-                    raise ValueError(
-                        "No active transmitters found in tx_array. "
-                        "Please define at least one transmitter (is_tx=True)."
-                    )
-            else:
-                raise ValueError(
-                    "tx_array is None — cannot resolve transmitters. "
-                    "Please provide a valid TransducerArray2D with at least one transmitter."
-                )
-
-        if tx_keep.ndim != 1 or tx_keep.size == 0:
-            raise ValueError(
-                "tx_keep must be a non-empty 1-D array of transmitter indices."
-            )
-        return tx_keep
-
-    def _resolve_mask_and_gid(
-        self,
-        data,
-        tx_array,
-        tx_keep: np.ndarray,
-        lin_idx_full: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        elem_mask = data.ctx.get("elem_mask")
-        if elem_mask is not None:
-            elem_mask = np.asarray(elem_mask, dtype=bool)
-            if elem_mask.ndim != 2:
-                raise ValueError("elem_mask must be 2-D")
-            tx_rx_mask = elem_mask[tx_keep]
-            lin_idx = np.asarray(lin_idx_full, dtype=np.int64)
-
-            n_rx = tx_rx_mask.shape[1]
-            if lin_idx.shape[0] < tx_rx_mask.shape[1]:
-                raise ValueError("grid_lin_idx shorter than receiver dimension")
-
-            rx_lin_idx = lin_idx[:n_rx]
-            return tx_rx_mask, rx_lin_idx
-
-        if tx_array is None:
-            raise ValueError(
-                "elem_mask missing; transducer geometry is required to infer defaults"
-            )
-
-        rx_indices = np.nonzero(tx_array.is_rx)[0].astype(np.int64)
-        if rx_indices.size == 0:
-            raise ValueError("Transducer array does not define any receiver elements")
-
-        tx_rx_mask = np.ones((tx_keep.size, rx_indices.size), dtype=bool)
-        rx_lookup = {elem_idx: idx for idx, elem_idx in enumerate(rx_indices)}
-        for row, elem_idx in enumerate(tx_keep):
-            col = rx_lookup.get(int(elem_idx))
-            if col is not None:
-                tx_rx_mask[row, col] = False
-
-        rx_lin_idx = np.asarray(lin_idx_full, dtype=np.int64)[rx_indices]
-        return tx_rx_mask, rx_lin_idx
-
     @staticmethod
     def _resolve_observed_data(
-        array: np.ndarray | None, f_idx: int, tx_keep: np.ndarray, n_rx: int
+            array: np.ndarray | None,
+            f_idx: int,
+            tx_idx: np.ndarray,
+            rx_idx: np.ndarray,
     ) -> np.ndarray | None:
-        n_tx = tx_keep.size
         if array is None:
             return None
 
@@ -371,19 +266,8 @@ class HelmholtzOperator(Operator):
         elif arr.ndim != 2:
             raise ValueError("Acquisition array must be 2-D or 3-D")
 
-        if arr.shape[1] < n_rx:
-            raise ValueError("Acquisition array has fewer receivers than required")
-        if arr.shape[1] > n_rx:
-            arr = arr[:, :n_rx]
+        if arr.shape[0] <= tx_idx.max() or arr.shape[1] <= rx_idx.max():
+            raise ValueError("Tx/Rx indices out of range for acquisition array shape.")
 
-        # Choose transmitter rows
-        if arr.shape[0] >= n_tx and tx_keep.size and tx_keep.max() < arr.shape[0]:
-            arr = arr[tx_keep]
-        elif arr.shape[0] != n_tx:
-            if arr.shape[0] < n_tx:
-                raise ValueError(
-                    "Acquisition array has fewer transmitters than required"
-                )
-            arr = arr[:n_tx]
-
+        arr = arr[np.ix_(tx_idx, rx_idx)]
         return arr.astype(np.complex128, copy=False)

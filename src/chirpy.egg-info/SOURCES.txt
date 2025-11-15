@@ -10,6 +10,7 @@ src/chirpy/data/__init__.py
 src/chirpy/data/acquisition_data.py
 src/chirpy/data/data_container.py
 src/chirpy/data/image_data.py
+src/chirpy/geometry/GeometryConfigurator.py
 src/chirpy/geometry/__init__.py
 src/chirpy/geometry/base.py
 src/chirpy/geometry/image_grid_2D.py
@@ -35,9 +36,10 @@ src/chirpy/optimization/gradient/time_grad.py
 src/chirpy/optimization/operator/__init__.py
 src/chirpy/optimization/operator/base.py
 src/chirpy/optimization/operator/helmholtz.py
-src/chirpy/optimization/operator/helmholtz_o.py
+src/chirpy/optimization/operator/helmholtz_optimized.py
 src/chirpy/optimization/operator/wave_operator.py
 src/chirpy/optimization/operator/functions/HelmholtzSolver.py
+src/chirpy/optimization/operator/functions/HelmholtzSolver_optimized.py
 src/chirpy/optimization/operator/functions/__init__.py
 src/chirpy/optimization/operator/functions/applyBlockLU.py
 src/chirpy/optimization/operator/functions/decompBlockLU.py

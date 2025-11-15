@@ -1,84 +1,61 @@
-"""
-UFWI.processors.downsample
-=================================
-
-Select every *k-th* transmitter to reduce computational load.
-"""
-
 from __future__ import annotations
 
 import numpy as np
 
 from chirpy.processors.base import BaseProcessor
 from chirpy.data import AcquisitionData
+from chirpy.geometry import GeometryConfigurator
 
 
 class DownSample(BaseProcessor):
     """
-    Reduce the number of transmitters by keeping every `step`-th one.
+    Subsample transmitters by keeping every `step`-th TX element.
+    This updates both the GeometryConfigurator and AcquisitionData.
 
-    This processor subsamples the first axis (Tx) of the acquisition tensor
-    `data.array`, which may be in time domain (shape `(Tx, Rx, T)`) or
-    frequency domain (shape `(Tx, Rx, F)`).
+    Behaviour
+    ---------
+    - Calls `geom.select_tx(step=step)` to update active TX elements.
+    - Uses `geom.get_tx_role_indices()` to slice the TX axis of `data.array`.
+    - Replaces NaNs with zeros.
 
     Parameters
     ----------
-    step : int, optional
-        Subsampling factor along the Tx axis.  Every `step`-th transmitter
-        is retained (default 1 → no downsampling).
-
-    After calling, the following changes occur:
-    - `data.array` is replaced by `data.array[0:Tx:step, :, :]`, reducing
-      the transmitter count from `Tx` to `ceil(Tx/step)`.
-    - `data.ctx["tx_keep"]` stores the 1D integer array of retained Tx indices.
-    - Any NaNs in the subsampled array are replaced with zero via `nan_to_num`.
-
-    Examples
-    --------
-    >>> # Suppose data.array has shape (10, 4, 200)
-    >>> ds = DownSample(step=2)
-    >>> ds(data)
-    >>> data.array.shape
-    (5, 4, 200)
-    >>> data.ctx["tx_keep"]
-    array([0, 2, 4, 6, 8])
+    geom_config : GeometryConfigurator
+        Shared geometry manager.
+    step : int
+        Subsampling factor (`1` → no change).
     """
 
-    def __init__(self, step: int = 1) -> None:
+    def __init__(self, geom_config: GeometryConfigurator, step: int = 1) -> None:
         if step < 1:
             raise ValueError("`step` must be >= 1.")
+        self._geom = geom_config
         self._step = int(step)
 
-    def __call__(self, data: AcquisitionData) -> None:
+    def __call__(self, data: AcquisitionData) -> AcquisitionData:
         """
-        Apply transmitter downsampling in place.
-
-        1. Compute indices to keep:
-             tx_keep = [0, step, 2*step, ...] < Tx
-        2. Subsample data.array:
-             data.array = data.array[tx_keep, :, :]
-        3. Store tx_keep in data.ctx for downstream use.
-        4. Replace any NaNs with zero.
-
-        Parameters
-        ----------
-        data : AcquisitionData
-            Container whose `array` of shape (Tx, Rx, *) will be subsampled.
+        Apply TX downsampling in place.
 
         Returns
         -------
-        None
+        AcquisitionData
+            The same object with reduced TX dimension.
         """
-        # choose Tx indices
-        tx_keep = np.arange(0, data.array.shape[0], self._step)
+        # 1) Update geometry: select TX elements in element-index space
+        self._geom.select_tx(step=self._step)
 
-        # slice in-place
-        data.array = data.array[tx_keep]
+        # 2) Get TX role indices (0..n_tx_all-1 → data.array axis 0)
+        tx_roles = np.asarray(self._geom.get_tx_role_indices(), dtype=np.int64)
 
-        # store for solver / adjoint sources
-        data.ctx["tx_keep"] = tx_keep
+        if tx_roles.ndim != 1 or tx_roles.size == 0:
+            raise ValueError("GeometryConfigurator returned empty TX role indices.")
+        if data.array.shape[0] <= tx_roles.max():
+            raise ValueError("TX role indices exceed acquisition array shape.")
 
-        # eliminate NaNs just like the original script
+        # 3) Slice acquisition tensor
+        data.array = data.array[tx_roles, ...]
+
+        # 4) Clean NaNs
         np.nan_to_num(data.array, copy=False)
 
         return data

@@ -34,7 +34,7 @@ class DataContainer:
     # ------------------------------------------------------------------
     def save(self, path: str):
         """
-        Save array (+ctx) to disk.  '.npz' → numpy.savez，否则 numpy.save (.npy).
+        Save array (+ctx) to disk.  '.npz' → numpy.savez numpy.save (.npy).
         """
         if path.endswith(".npz"):
             np.savez(path, array=self.array, **self.ctx)
@@ -53,7 +53,7 @@ class DataContainer:
     # shape / slice helpers
     # ------------------------------------------------------------------
     def _wrap(self, arr):
-        """Internal helper: wrap ndarray into same-type container,携几何/ctx"""
+        """Internal helper: wrap ndarray into same-type container ctx"""
         return self.__class__(
             arr, grid=self.grid, tx_array=self.tx_array, **copy.deepcopy(self.ctx)
         )

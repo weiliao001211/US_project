@@ -70,9 +70,9 @@ class ImageGrid2D(Geometry):
             jy = np.arange(ny, dtype=float)
 
             if nx % 2 == 0:
-                xi = (jx - nx / 2.0) * dx  # k-Wave 偶数公式
+                xi = (jx - nx / 2.0) * dx
             else:
-                xi = (jx - (nx - 1) / 2.0) * dx  # k-Wave 奇数公式
+                xi = (jx - (nx - 1) / 2.0) * dx
             if ny % 2 == 0:
                 yi = (jy - ny / 2.0) * dy
             else:
@@ -89,7 +89,7 @@ class ImageGrid2D(Geometry):
             dy = dx if dy is None else dy
             ymax = xmax if ymax is None else ymax
 
-            # choose n so that max |x| ≤ xmax 且对称；用奇数以包含中心点
+            # choose n so that max |x| ≤ xmax
             nx = int(2 * np.floor(xmax / dx) + 1)
             ny = int(2 * np.floor(ymax / dy) + 1)
             if nx < 2 or ny < 2:

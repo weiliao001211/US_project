@@ -197,7 +197,7 @@ class TransducerArray2D(Geometry):
         mask : ndarray of bool, shape (nx, ny)
         """
         mask = np.zeros((img_grid.nx, img_grid.ny), dtype=bool)  # (x, y)
-        rx_flags = self._get_rx_flags_for_tx(tx_idx, drop)  # 修正：调用私有方法
+        rx_flags = self._get_rx_flags_for_tx(tx_idx, drop)
         for (x, y), use in zip(self.positions.T, rx_flags):
             if not use:
                 continue

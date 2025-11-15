@@ -3,7 +3,7 @@ import numpy as np
 from scipy.io import savemat
 
 from chirpy.io import load_mat
-from chirpy.geometry import TransducerArray2D, ImageGrid2D
+from chirpy.geometry import TransducerArray2D, ImageGrid2D, GeometryConfigurator
 from chirpy.data import AcquisitionData, ImageData
 from chirpy.processors import (
     GaussianTimeWindow,
@@ -35,7 +35,8 @@ Process:
 """
 
 # --------------------------- Configuration --------------------------- #
-ROOT_DIR = detect_root()
+# ROOT_DIR = detect_root()
+ROOT_DIR = Path.cwd()
 DATA_DIR = Path(ROOT_DIR / "data")
 SAVE_DIR = Path(ROOT_DIR / "outputs")
 SAVE_DIR.mkdir(exist_ok=True, parents=True)
@@ -46,7 +47,7 @@ progress = Progress(ProgressConfig(enabled=True, backend="tqdm", ncols=90))
 
 dxi = 0.6e-3
 xmax = 120e-3
-c0 = 1540.0
+c0 = 1500.0
 
 f_sos = np.arange(0.3, 1.3, 0.05) * 1e6
 f_att = np.arange(0.325, 1.325, 0.05) * 1e6
@@ -74,15 +75,17 @@ def main() -> None:
         c0=c0,
     )
 
-    # 2) Preprocess pipeline → (Tx,Rx,Nfreq)
+    geom = GeometryConfigurator(grid, tx_array)
+    geom.configure_acceptance(delta=63)
+
+    # 2) Preprocess (Tx, Rx, Nt) → (Tx,Rx,Nfreq)
     pipe = Pipeline(
         stages=[
             GaussianTimeWindow(),
             DTFT(freqs),
-            PhaseScreenCorrection(grid),
-            DownSample(step=1),
-            AcceptanceMask(delta=63),
-            MagnitudeOutlierFilter(threshold=0.99),
+            PhaseScreenCorrection(geom_config=geom),
+            DownSample(geom_config=geom, step=1),
+            MagnitudeOutlierFilter(geom_config=geom, threshold=0.99),
         ],
         verbose=True,
     )
@@ -116,8 +119,9 @@ def main() -> None:
     for k in range(Nf):
         print(f"\n=== freq {k}/{Nf - 1}: {freqs[k] / 1e6:.3f} MHz ===")
         op = HelmholtzOperator(
-            acq,
-            k,
+            data=acq,
+            f_idx=k,
+            geom=geom,
             sign_conv=-1,
             pml_alpha=10.0,
             pml_size=9.0e-3,

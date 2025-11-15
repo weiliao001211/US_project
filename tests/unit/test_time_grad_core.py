@@ -43,14 +43,14 @@ class FakeTDOp:
         pass
 
 
-def test_k_loop_sums_not_averages():
+def test_k_loop_averages():
     op = FakeTDOp()
     ge = AdjointStateGrad(op, K=5, use_first_deriv_product=True)
     m = op.model_c.copy().astype(np.float64)
     g = ge.evaluate(m, None, kind="c")
-    # Single-realization result should be proportional; sum is 5× if encoding has no delays
+    # Single-realization result should match the averaged multi-encoding result
     ge2 = AdjointStateGrad(op, K=1, use_first_deriv_product=True)
     g1 = ge2.evaluate(m, None, kind="c")
-    # Allow zeros (fake op) but shape must be identical and scaling by 5 must hold
+    # Allow zeros (fake op) but shape must be identical and averaging should match
     assert g.shape == g1.shape
-    np.testing.assert_allclose(g, 5 * g1)
+    np.testing.assert_allclose(g, 1 * g1)

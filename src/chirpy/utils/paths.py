@@ -12,7 +12,7 @@ def find_repo_root(start: Path, marker: str = "src/chirpy") -> Path:
 
 def detect_root() -> Path:
     # 1. Env var override
-    if "MSGB_ROOT" in os.environ:
+    if "CHIRPY_ROOT" in os.environ:
         return Path(os.environ["CHIRPY_ROOT"]).expanduser()
 
     # 2. Colab

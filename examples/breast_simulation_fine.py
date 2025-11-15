@@ -32,11 +32,12 @@ KWAVE_DIR = None
 progress = Progress(ProgressConfig(enabled=True, backend="tqdm", ncols=90))
 
 # Grid / physics
-Nx = Ny = 240
-dx = dy = 1.0e-3
+xmax = 120e-3
+nx = 480
+dx = dy = 0.5e-3
 c0_ref = 1500.0
 
-f0 = 0.3e6
+f0 = 1e6
 use_gpu = False
 use_tqdm = True
 
@@ -56,10 +57,13 @@ def main() -> None:
     # 1) Load & downsample ground-truth sound speed
     mat = loadmat(DATA_DIR / "C_true.mat")
     model_raw = mat["C_true"]  # expected 2D array
-    img_grid = ImageGrid2D(nx=Nx, ny=Ny, dx=dx)
+    img_grid = ImageGrid2D(nx=nx, dx=dx)
+
+    print(img_grid.extent, img_grid.nx)
 
     img_true = ImageData(model_raw).downsample_to(new_grid=img_grid)
     c_true = img_true.array.astype(np.float32)
+
 
     # 2) Record time and reference speed
     c_min = float(c_true.min())

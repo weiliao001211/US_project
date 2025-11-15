@@ -402,7 +402,7 @@ def applyBlockLU(SRC, Ld, Ll, Lu, Ud, Ul, Uu, invT, adjHelmholtzEqn):
     # Encapsulate a function to flatten when passing the kernel.
     def callKernel(kernel, argsShapes):
         """
-        argsShapes: [(arr, shapeAfter)] => 先 flatten => kernel => 再 unflatten
+        argsShapes: [(arr, shapeAfter)] => flatten => kernel => unflatten
         kernel(...) => raw param tuple
         """
         flatArgs = []

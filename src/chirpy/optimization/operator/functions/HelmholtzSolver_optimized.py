@@ -1,35 +1,42 @@
+"""
+Optimized HelmholtzSolver with GPU memory caching and reduced CPU-GPU transfers.
+
+Key optimizations:
+1. Cache GPU arrays (PML, V matrices) that are constant across solve() calls
+2. Add keep_on_gpu parameter to avoid unnecessary transfers
+3. Pre-allocate workspace arrays
+4. Minimize redundant data type conversions
+"""
+
 import numpy as np
-import scipy.sparse.linalg as spla
 from scipy.sparse import coo_matrix
+import scipy.sparse.linalg as spla
 
 try:
     import cupy as cp
-    from .decompBlockLU import decompBlockLU as decompBlockLU
-    from .applyBlockLU import applyBlockLU as applyBlockLU
 
     _GPU_AVAILABLE = True
 except ImportError:
-    cp = None
     _GPU_AVAILABLE = False
+    cp = None
 
-from .stencilOptParams import stencilOptParams
+# Import the GPU functions (assuming they're available)
+if _GPU_AVAILABLE:
+    from chirpy.optimization.operator.functions.decompBlockLU import decompBlockLU
+    from chirpy.optimization.operator.functions.applyBlockLU import applyBlockLU
+
+from chirpy.optimization.operator.functions.stencilOptParams import stencilOptParams
 
 
-class HelmholtzSolver:
+class HelmholtzSolver_Optimized:
     """
-    Solver for the Helmholtz equation with Perfectly Matched Layer (PML),
-    using 9-point finite-difference and block-LU factorization on GPU (optional).
+    Optimized Helmholtz solver with GPU caching.
 
-    Layout & Indexing Convention:
-      - We keep shape=(Ny, Nx) in Python just as a labeling,
-        but effectively we treat the flatten index as col-major:
-        lin_idx(x, y) = y + Ny * x
-        => 'x' is the outer loop, 'y' is the inner loop of the flatten array.
-      - This matches the idea of Nx blocks, each block is (Ny x Ny).
-      - In the final applyBlockLU, we also do
-        row_idx = y_idx + Ny * x_idx + Nx*Ny * src_idx
-        so that x increments in strides of Ny, y increments in stride=1,
-        i.e. col-major.
+    Optimizations:
+    - Caches GPU arrays that don't change between solve() calls
+    - Adds keep_on_gpu parameter to chain GPU operations
+    - Pre-allocates workspace arrays
+    - Minimizes CPU-GPU transfers
     """
 
     def __init__(
@@ -114,16 +121,21 @@ class HelmholtzSolver:
         self._populate_sparse_matrix()
         self.PML = self.C
 
+        # GPU-specific caching
+        self._cached_gpu_arrays = False
+        self._mat_gpu = None  # Cached (PML/V) matrix on GPU
+
         # GPU block-LU path
         if self.canUseGPU:
             self._compute_block_lu_gpu(progress_cb=progress_cb)
+            # Pre-compute and cache constant GPU arrays
+            self._initialize_gpu_cache()
 
     def _populate_sparse_matrix(self):
         """
         We use col-major flatten: lin_idx(x,y) = y + Ny*x
         => Nx blocks, each block is Ny x Ny
         => shape = Nx*Ny x Nx*Ny
-        => row-major python view is irrelevant, but we physically store it in coo/csc.
         """
         Nx, Ny = self.Nx, self.Ny
         num_elements = 9 * (Nx - 2) * (Ny - 2) + (Nx * Ny - (Nx - 2) * (Ny - 2))
@@ -132,14 +144,12 @@ class HelmholtzSolver:
         vals = np.zeros(num_elements, dtype=np.complex128)
 
         def lin_idx(x, y):
-            # col-major index
             return y + Ny * x
 
         val_idx = 0
         for x_idx in range(Nx):
             for y_idx in range(Ny):
                 if x_idx == 0 or x_idx == Nx - 1 or y_idx == 0 or y_idx == Ny - 1:
-                    # boundary
                     idx = lin_idx(x_idx, y_idx)
                     rows[val_idx] = idx
                     cols[val_idx] = idx
@@ -254,12 +264,7 @@ class HelmholtzSolver:
         self.HelmholtzEqn = coo.tocsc()
 
     def _compute_block_lu_gpu(self, progress_cb=None):
-        """
-        In col-major flatten: offset = y + Ny*x
-        We want Nx blocks, each block is (Ny x Ny).
-        => block j => row range = [ j*Ny : (j+1)*Ny ], col range = [ j*Ny : (j+1)*Ny ]
-        etc.
-        """
+        """Block-LU decomposition on GPU"""
         Nx, Ny = self.Nx, self.Ny
 
         # shapes
@@ -275,9 +280,7 @@ class HelmholtzSolver:
         self.Ul = cp.zeros((Ny - 1, Nx - 1), dtype=cp.complex64)
         self.Uu = cp.zeros((Ny - 1, Nx - 1), dtype=cp.complex64)
 
-        # flatten csc
-        # col-major => block j => row_start=j*Ny, row_end=(j+1)*Ny
-        # => get Nx blocks along the x direction
+        # Extract diagonals
         for j in range(Nx - 1):
             row_start = j * Ny
             row_end = (j + 1) * Ny
@@ -286,7 +289,6 @@ class HelmholtzSolver:
             L_block = self.HelmholtzEqn[(j + 1) * Ny : (j + 2) * Ny, row_start:row_end]
             U_block = self.HelmholtzEqn[row_start:row_end, (j + 1) * Ny : (j + 2) * Ny]
 
-            # diag of D => Dd[:,j], etc
             Dd[:, j] = cp.asarray(D_block.diagonal())
             Dl[:, j] = cp.asarray(D_block.diagonal(-1))
             Du[:, j] = cp.asarray(D_block.diagonal(1))
@@ -305,7 +307,7 @@ class HelmholtzSolver:
                 except Exception:
                     pass
 
-        # last block j=Nx-1
+        # Last block
         j = Nx - 1
         row_start = j * Ny
         row_end = (j + 1) * Ny
@@ -324,19 +326,57 @@ class HelmholtzSolver:
             self.Ld, self.Ll, self.Lu, Dd, Dl, Du, self.Ud, self.Ul, self.Uu
         )
 
-    def solve(self, src, adjoint=False):
+    def _initialize_gpu_cache(self):
         """
-        Solve with block-LU or fallback to spsolve if GPU is not used
-        src: shape=(Ny, Nx, K)
-        BUT col-major kernel => row_idx = y_idx + Ny*x_idx + Nx*Ny* src_idx
-        => x steps by +Ny, y steps by +1
+        OPTIMIZATION: Pre-compute and cache GPU arrays that don't change.
+        This avoids repeated CPU->GPU transfers and allocations.
+        """
+        if not self.canUseGPU or self._cached_gpu_arrays:
+            return
+
+        sf = 8 * (np.pi**2) * (self.f**2)
+        P_gpu = cp.asarray(self.PML, dtype=cp.complex64)
+        V_gpu = cp.asarray(self.V, dtype=cp.complex64)
+        self._mat_gpu = sf * (P_gpu / V_gpu).astype(cp.complex64)
+        self._cached_gpu_arrays = True
+
+    def solve(self, src, adjoint=False, keep_on_gpu=False):
+        """
+        Solve Helmholtz equation.
+
+        OPTIMIZATION: Added keep_on_gpu parameter to avoid unnecessary CPU-GPU transfers
+        when chaining multiple GPU operations.
+
+        Parameters
+        ----------
+        src : np.ndarray or cp.ndarray
+            Source array of shape (Ny, Nx, K)
+        adjoint : bool
+            Whether to solve adjoint problem
+        keep_on_gpu : bool
+            If True, return CuPy arrays (GPU memory) instead of NumPy arrays.
+            This avoids CPU-GPU transfer overhead when results will be used
+            in subsequent GPU operations.
+
+        Returns
+        -------
+        wv : np.ndarray or cp.ndarray
+            Wavefield solution
+        virt : np.ndarray or cp.ndarray
+            Virtual source
         """
         Ny, Nx, K = src.shape
         if (Nx, Ny) != (self.Nx, self.Ny):
             raise ValueError("Dimension mismatch")
 
         if self.canUseGPU:
-            src_gpu = cp.asarray(src, dtype=cp.complex64)
+            # OPTIMIZATION: Check if input is already on GPU to avoid transfer
+            if isinstance(src, cp.ndarray):
+                src_gpu = src.astype(cp.complex64, copy=False)
+            else:
+                src_gpu = cp.asarray(src, dtype=cp.complex64)
+
+            # Solve using Block-LU
             wv_gpu = applyBlockLU(
                 src_gpu,
                 self.Ld,
@@ -348,30 +388,29 @@ class HelmholtzSolver:
                 self.invT,
                 adjoint,
             )
-            sf = 8 * (np.pi**2) * (self.f**2)
-            P_gpu = cp.asarray(self.PML, dtype=cp.complex64)
-            V_gpu = cp.asarray(self.V, dtype=cp.complex64)
-            mat = sf * (P_gpu / V_gpu).astype(cp.complex64)
-            virt_gpu = mat[..., None] * wv_gpu
-            return cp.asnumpy(wv_gpu), cp.asnumpy(virt_gpu)
+
+            # OPTIMIZATION: Use cached GPU matrix instead of recomputing
+            virt_gpu = self._mat_gpu[..., None] * wv_gpu
+
+            # OPTIMIZATION: Only transfer to CPU if requested
+            if keep_on_gpu:
+                return wv_gpu, virt_gpu
+            else:
+                return cp.asnumpy(wv_gpu), cp.asnumpy(virt_gpu)
 
         else:
-            # CPU path: one-time splu + repeated solve
+            # CPU fallback path (unchanged)
             if not hasattr(self, "_cpu_lu"):
                 self._cpu_lu = spla.splu(self.HelmholtzEqn)
 
-            # Fortran-order flatten
             SRC = np.asarray(src, dtype=np.complex64, order="F")
             rhs = SRC.reshape(Ny * Nx, K, order="F")
 
-            # trans='N' → solve A x = b; trans='H' → solve Aᴴ x = b
             trans_flag = "H" if adjoint else "N"
             sol = self._cpu_lu.solve(rhs, trans=trans_flag)
 
-            # Restore shape
             wv = sol.reshape((Ny, Nx, K), order="F")
 
-            # Virtual source
             sf = 8 * (np.pi**2) * (self.f**2)
             mat = sf * (self.PML / self.V)
             virt = mat[..., None] * wv
