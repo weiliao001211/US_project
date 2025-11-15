@@ -14,8 +14,8 @@ class DownSample(BaseProcessor):
 
     Behaviour
     ---------
-    - Calls `geom.select_tx(step=step)` to update active TX elements.
-    - Uses `geom.get_tx_role_indices()` to slice the TX axis of `data.array`.
+    - Calls `geom_config.select_tx(step=step)` to update active TX elements.
+    - Uses `geom_config.get_tx_role_indices()` to slice the TX axis of `data.array`.
     - Replaces NaNs with zeros.
 
     Parameters

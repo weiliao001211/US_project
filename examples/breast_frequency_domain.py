@@ -121,7 +121,7 @@ def main() -> None:
         op = HelmholtzOperator(
             data=acq,
             f_idx=k,
-            geom=geom,
+            geom_config=geom,
             sign_conv=-1,
             pml_alpha=10.0,
             pml_size=9.0e-3,

@@ -2,13 +2,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from chirpy.geometry import TransducerArray2D, ImageGrid2D
+from chirpy.geometry import TransducerArray2D, ImageGrid2D, GeometryConfigurator
 from chirpy.data import AcquisitionData, ImageData
 from chirpy.optimization.operator.wave_operator import WaveOperator
 from chirpy.optimization.gradient.time_grad import AdjointStateGrad
 from chirpy.optimization.function.least_squares import NonlinearLS
-from chirpy.optimization.algorithm.gd import GD
-from chirpy.optimization.algorithm.cg_time import CG_Time
+from chirpy.optimization.algorithm import GD, CG_Time, SGD
 from chirpy.utils.visualizer_multi_mode import Visualizer
 from chirpy.signals import GaussianModulatedPulse
 from chirpy.utils.paths import detect_root
@@ -26,7 +25,8 @@ Process:
 """
 
 # --------------------------- Configuration --------------------------- #
-ROOT_DIR = detect_root()
+# ROOT_DIR = detect_root()
+ROOT_DIR = Path.cwd()
 SAVE_DIR = Path(ROOT_DIR / "outputs")
 SAVE_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -41,12 +41,12 @@ record_time = 1.2 * Nx * dx / c0
 
 # Inversion
 USE_ENCODING = True  # source encoding on/off
-K = 16  # random enc. averages when encoding
+K = 5  # random enc. averages when encoding
 TAU_MAX = 0.0  # random delay bound
 DROP_SELF_RX = True  # used if not encoding
 N_ITER = 10
 NORMALIZE = True
-ALGO = "GD"  # {"GD","CG_Time"}
+ALGO = "SGD"  # {"GD","CG_Time"}
 ETA0 = 6.0e-1
 
 # Exec
@@ -71,18 +71,21 @@ def main() -> None:
         grid=grid, r=(min(Nx, Ny) // 2 - 2) * dx, n=n_tx
     )
     acq_geom = AcquisitionData.from_geometry(grid=grid, tx_array=tx_array)
+    geom = GeometryConfigurator(grid, tx_array)
+    geom.configure_acceptance(delta=0)
 
     # 2) Forward data (no encoding)
     pulse = GaussianModulatedPulse(f0=5e5, frac_bw=0.75, amp=1.0)
     op_true = WaveOperator(
-        acq_geom,
-        {"sound_speed": c_true},
-        record_time,
+        data=acq_geom,
+        geom_config=geom,
+        medium_params={"sound_speed": c_true},
+        record_time=record_time,
         use_encoding=False,
         record_full_wf=False,
         pml_size=10,
         cfl=0.2,
-        drop_self_rx=True,
+        # drop_self_rx=True,
         pulse=pulse,
         use_gpu=use_gpu,
         progress=progress,
@@ -97,16 +100,18 @@ def main() -> None:
     acq_inv = AcquisitionData(
         array=d_obs, tx_array=acq_geom.tx_array, grid=grid, time=t_vec
     )
+
     op_inv = WaveOperator(
-        acq_inv,
-        {"sound_speed": c0},
-        record_time,
+        data=acq_inv,
+        geom_config=geom,
+        medium_params={"sound_speed": c0},
+        record_time=record_time,
         use_encoding=USE_ENCODING,
         tau_max=(TAU_MAX if USE_ENCODING else 0.0),
         record_full_wf=True,
         pml_size=10,
         cfl=0.2,
-        drop_self_rx=bool(DROP_SELF_RX and not USE_ENCODING),
+        # drop_self_rx=bool(DROP_SELF_RX and not USE_ENCODING),
         pulse=pulse,
         use_gpu=use_gpu,
         progress=progress,
@@ -129,6 +134,17 @@ def main() -> None:
             backtrack=False,
             max_bt=12,
             schedule_fn=lambda k, lr: lr,
+            viz=viz,
+            progress=progress,
+        )
+    elif ALGO == "SGD":
+        def sgd_schedule(k: int, lr0: float) -> float:
+            return lr0 * (0.95**(k // 5))
+
+        solver = SGD(
+            lr=50 * ETA0,
+            schedule_fn=sgd_schedule,
+            momentum=0.9,
             viz=viz,
             progress=progress,
         )

@@ -12,6 +12,7 @@ from chirpy.data import AcquisitionData
 from chirpy.optimization.operator.base import Operator
 from chirpy.signals import Pulse, GaussianModulatedPulse
 from chirpy.utils.progress import Progress, ProgressConfig
+from chirpy.geometry import GeometryConfigurator
 
 from kwave.kgrid import kWaveGrid
 from kwave.kmedium import kWaveMedium
@@ -22,6 +23,7 @@ from kwave.options.simulation_options import SimulationOptions
 from kwave.options.simulation_execution_options import (
     SimulationExecutionOptions,
 )
+
 
 # =========================================================================
 #   main operator
@@ -125,38 +127,54 @@ class WaveOperator(Operator):
     """
 
     # ------------------------------------------------------------------
-    def __init__(  # noqa: C901
-        self,
-        data: AcquisitionData,
-        medium_params: dict,
-        record_time: float,
-        *,
-        tau_max: float = 0.0,
-        use_encoding: bool = False,
-        drop_self_rx: bool = False,
-        record_full_wf: bool = True,
-        cfl: float = 0.3,
-        c_ref: float = 1580,
-        pml_size: int = 10,
-        pml_alpha: float = 10.0,
-        encoding_seed: Optional[int] = None,
-        # ---------- new opts -----------------------------------------
-        pulse: Pulse | None = None,
-        scale_source_terms: bool = True,
-        src_mode: str = "additive",  # 'additive' or 'dirichlet'
-        pml_inside: bool = False,
-        use_gpu: bool = False,
-        verbose: bool = False,
-        progress: Progress | None = None,
-        binary_path: Path = None,
+    def __init__(
+            self,
+            data: AcquisitionData,
+            medium_params: dict,
+            record_time: float,
+            *,
+            geom_config: GeometryConfigurator | None = None,
+            tau_max: float = 0.0,
+            use_encoding: bool = False,
+            drop_self_rx: bool = False,
+            record_full_wf: bool = True,
+            cfl: float = 0.3,
+            c_ref: float = 1580,
+            pml_size: int = 10,
+            pml_alpha: float = 10.0,
+            encoding_seed: Optional[int] = None,
+            # ---------- new opts -----------------------------------------
+            pulse: Pulse | None = None,
+            scale_source_terms: bool = True,
+            src_mode: str = "additive",  # 'additive' or 'dirichlet'
+            pml_inside: bool = False,
+            use_gpu: bool = False,
+            verbose: bool = False,
+            progress: Progress | None = None,
+            binary_path: Path = None,
     ):
         super().__init__()
+
+        if geom_config is None:
+            geom = GeometryConfigurator(data.grid, data.tx_array)
+        else:
+            geom = geom_config
+
+        if drop_self_rx and not use_encoding:
+            geom.configure_acceptance(delta=0)
+
+        if use_encoding:
+            if drop_self_rx:
+                print("[WaveOperator][WARNING] drop_self_rx ignored when use_encoding=True.")
+            geom.configure_acceptance(delta=-1)
+
+        self._geom = geom
 
         # ---------- cache / field pool -------------------------------
         self._fields: Dict[str, np.ndarray] = {}
 
         # ---------- 1. grid ------------------------------------------
-        img_grid = data.grid
+        img_grid = geom.grid
         self.nx, self.ny = img_grid.nx, img_grid.ny
         self.dx, self.dy = img_grid.spacing
         self.grid = kWaveGrid(N=[self.ny, self.nx], spacing=[self.dy, self.dx])
@@ -209,41 +227,36 @@ class WaveOperator(Operator):
         )
 
         # ---------- 5. geometry --------------------------------------
-        self.tx_pos = tx_array.tx_positions.astype(float)
-        self.n_tx = self.tx_pos.shape[1]
+        # Active TX elements and positions (element index space)
+        self.tx_elem_indices = geom.get_tx_elem_indices()  # element indices
+        self.n_tx = self.tx_elem_indices.size
+        self.tx_pos = self.tx_array.positions[:, self.tx_elem_indices].astype(float)
 
-        # Source mask (k-Wave uses Fortran column-major linear indexing)
-        self.src_mask = tx_array.get_tx_mask(self.img_grid).T
+        # Source mask for all active transmitters (grid mask, Fortran-order)
+        self.src_mask = geom.build_src_mask_full().T
         lin_idx = np.flatnonzero(self.src_mask.flatten(order="F"))
         self._row_map: Dict[int, int] = {idx: k for k, idx in enumerate(lin_idx)}
 
-        # "global element index" sequence of the transmitter
-        self.tx_elem_indices = np.flatnonzero(tx_array.is_tx)
+        # Active RX mask from GeometryConfigurator
+        self.rx_mask = geom.build_rx_mask_full().T
 
-        # Full ring Rx info (using built-in mask directly)
-        self.rx_mask = tx_array.get_rx_mask(self.img_grid).T
-
-        # Rx linear indices in k-Wave order
+        # Rx linear indices in k-Wave order (flattened Fortran)
         self._rx_lin_idx_full = np.flatnonzero(self.rx_mask.flatten(order="F"))
         self.n_rx_full = int(self.rx_mask.sum())
         self._rx_lin_idx = self._rx_lin_idx_full
         self.n_rx = self.n_rx_full
 
         # ---------- 6. receiver masks -------------------------------
-        lin_each = []
-        rx_elem_indices = []
-        for i in range(tx_array.n_elements):
-            x, y = tx_array.positions[:, i]
-            ix, iy = self._xy2idx((x, y))
-            if self.rx_mask[iy, ix]:
-                rx_elem_indices.append(i)
-                lin_each.append(iy + ix * self.ny)  # Fortran: iy + ix*ny
-        lin_each = np.asarray(lin_each, dtype=np.int64)
+        # Active receiver elements and their linear indices
+        rx_elem_indices = geom.get_rx_elem_indices()  # element indices of active RX
+        lin_each = geom.elem_lin_idx[rx_elem_indices].astype(np.int64)
 
-        lin_full = self._rx_lin_idx_full
+        lin_full = self._rx_lin_idx_full  # linear indices in k-Wave order
         self.idx_elem2kw = np.searchsorted(lin_full, lin_each).astype(np.int64)
+
         self.idx_kw2elem = np.empty(self.n_rx_full, dtype=np.int64)
         self.idx_kw2elem[self.idx_elem2kw] = np.arange(self.n_rx_full, dtype=np.int64)
+
         self._rx_elem_indices = np.asarray(rx_elem_indices, dtype=np.int64)
 
         # --- per-Tx mask (only valid when sequential) ----------------
@@ -253,20 +266,6 @@ class WaveOperator(Operator):
         self.enc_weights: Optional[np.ndarray] = None  # ±1 weights
         self.enc_delays: Optional[np.ndarray] = None  # integer samples
         self.tau_step = int(round(self.tau_max / self.dt))  # ≥0
-
-        self.rx_mask_per_tx: Optional[np.ndarray] = None
-        if self.use_encoding and self.drop_self_rx:
-            print(
-                "[TDO-FWD][WARN ] drop_self_rx=True is ignored when use_encoding=True. Use weighting in the misfit instead."
-            )
-            self.drop_self_rx = False
-
-        if self.drop_self_rx and not self.use_encoding:
-            self.rx_mask_per_tx = np.empty((self.n_tx, self.ny, self.nx), dtype=bool)
-            for k, elem_idx in enumerate(self.tx_elem_indices):
-                self.rx_mask_per_tx[k] = tx_array.get_rx_mask_for_tx(
-                    self.img_grid, elem_idx, True
-                ).T
 
         # ---------- 7. pulse -----------------------------------------
         if pulse is None:
@@ -422,9 +421,9 @@ class WaveOperator(Operator):
         for internal calculation purposes only. For external viewing, please use _fields['obs_data'] (element order).
         """
         if (
-            self.obs_data_full is None
-            or self.enc_weights is None
-            or self.enc_delays is None
+                self.obs_data_full is None
+                or self.enc_weights is None
+                or self.enc_delays is None
         ):
             raise RuntimeError("obs_data_full or encoding vectors not ready")
         enc = np.zeros((1, self.n_rx_full, self.nt), dtype=self.obs_data_full.dtype)
@@ -445,22 +444,21 @@ class WaveOperator(Operator):
         return self._fields[key]
 
     def _n_rx_print(self, tx_idx: Optional[int] = None) -> int:
-        if self.use_encoding:
+        if tx_idx is None:
             return self.n_rx_full
-        if self.drop_self_rx and tx_idx is not None:
-            return int(self.rx_mask_per_tx[tx_idx].sum())
-        return self.n_rx_full
+        rx_mask_tx = self._geom.build_rx_mask_for_tx(tx_idx)
+        return int(rx_mask_tx.sum())
 
     # ================================================================
     # k-Wave low-level wrapper
     # ================================================================
     def _run_sim(
-        self,
-        src_mask,
-        p_mat,
-        *,
-        full_wf: bool,
-        sensor_mask_override: Optional[np.ndarray] = None,
+            self,
+            src_mask,
+            p_mat,
+            *,
+            full_wf: bool,
+            sensor_mask_override: Optional[np.ndarray] = None,
     ):
         """Run kspaceFirstOrder2D with fresh grid & medium each time."""
         p_mat = np.ascontiguousarray(p_mat, dtype=np.float32)
@@ -561,7 +559,7 @@ class WaveOperator(Operator):
 
                 p_mat = np.zeros((self.src_mask.sum(), self.nt), np.float32)
                 for w, d, (x, y) in zip(
-                    self.enc_weights, self.enc_delays, self.tx_pos.T
+                        self.enc_weights, self.enc_delays, self.tx_pos.T
                 ):
                     ix, iy = self._xy2idx((x, y))
                     row = self._row_map[iy + ix * self.ny]
@@ -571,7 +569,7 @@ class WaveOperator(Operator):
                     seg_len = end - d
                     if seg_len > 0:
                         p_mat[row, d:end] = (
-                            w * self.pulse[0, :seg_len] / self._src_scale
+                                w * self.pulse[0, :seg_len] / self._src_scale
                         )
 
                 wf, rec_kw = self._run_sim(self.src_mask, p_mat, full_wf=full)
@@ -611,15 +609,14 @@ class WaveOperator(Operator):
                     np.float32, copy=True
                 )
 
-                if self.drop_self_rx:
-                    wf, rec_kw = self._run_sim(
-                        mask_single,
-                        pulse_single,
-                        full_wf=full,
-                        sensor_mask_override=self.rx_mask_per_tx[i],
-                    )
-                else:
-                    wf, rec_kw = self._run_sim(mask_single, pulse_single, full_wf=full)
+                rx_mask_tx = self._geom.build_rx_mask_for_tx(i).T
+
+                wf, rec_kw = self._run_sim(
+                    mask_single,
+                    pulse_single,
+                    full_wf=full,
+                    sensor_mask_override=rx_mask_tx,
+                )
 
                 if wf is not None:
                     WF_list.append(wf)
@@ -691,26 +688,22 @@ class WaveOperator(Operator):
 
             for tx in tx_iterator:
                 start_i = time.time()
-                if self.drop_self_rx:
-                    lin_full = self._rx_lin_idx_full
-                    lin_cur = np.flatnonzero(self.rx_mask_per_tx[tx].flatten(order="F"))
-                    pos = np.searchsorted(lin_full, lin_cur)
+                # The RX mask of this Tx is obtained based on geometry.
+                rx_mask_tx = self._geom.build_rx_mask_for_tx(tx).T
+                lin_full = self._rx_lin_idx_full
+                lin_cur = np.flatnonzero(rx_mask_tx.flatten(order="F"))
+                pos = np.searchsorted(lin_full, lin_cur)
 
-                    q_rev_used = residual_kw[tx][pos][:, ::-1]
-                    q_rev_used = np.cumsum(q_rev_used, axis=1) * self.dt
-                    p_src = q_rev_used / self._src_scale
+                q_rev_used = residual_kw[tx][pos][:, ::-1]  # (n_rx_tx, nt)
+                q_rev_used = np.cumsum(q_rev_used, axis=1) * self.dt
+                p_src = q_rev_used / self._src_scale
 
-                    wf, _ = self._run_sim(
-                        self.rx_mask_per_tx[tx],
-                        p_src,
-                        full_wf=True,
-                        sensor_mask_override=self.rx_mask_per_tx[tx],
-                    )
-                else:
-                    q_rev = residual_kw[tx][:, ::-1]
-                    q_rev = np.cumsum(q_rev, axis=1) * self.dt
-                    p_src = q_rev / self._src_scale
-                    wf, _ = self._run_sim(self.rx_mask, p_src, full_wf=True)
+                wf, _ = self._run_sim(
+                    rx_mask_tx,
+                    p_src,
+                    full_wf=True,
+                    sensor_mask_override=rx_mask_tx,
+                )
 
                 lam += wf[::-1]
 
@@ -725,55 +718,6 @@ class WaveOperator(Operator):
 
         lam = lam.astype(np.float64)
         self._fields["wf_adj"] = lam
-        return lam
-
-    # ================================================================
-    # NEW: single-Tx adjoint for drop_self_rx=True
-    # ================================================================
-    def adjoint_one_tx(self, residual_tx: np.ndarray, tx_idx: int) -> np.ndarray:
-        """
-        Back-propagate the residual for ONE Tx (non-encoding mode).
-        """
-        if self.use_encoding:
-            raise RuntimeError("adjoint_one_tx() is only meant for non-encoding mode.")
-        if not self.drop_self_rx:
-            return self.adjoint(residual_tx[None, ...])
-
-        if residual_tx.shape[0] != self.n_rx_full or residual_tx.shape[1] != self.nt:
-            print(
-                f"[TDO-ADJ][ERROR] residual_tx shape mismatch: got {residual_tx.shape}, expect ({self.n_rx_full},{self.nt})"
-            )
-            raise ValueError(
-                f"residual_tx must be (n_rx_full={self.n_rx_full}, nt={self.nt})"
-            )
-        if tx_idx < 0 or tx_idx >= self.n_tx:
-            print(
-                f"[TDO-ADJ][ERROR] tx_idx out of range: got {tx_idx}, valid [0,{self.n_tx})"
-            )
-            raise IndexError(f"tx_idx out of range [0, {self.n_tx})")
-
-        lam = np.zeros((self.nt, self.ny, self.nx), np.float32)
-
-        residual_kw = residual_tx[self.idx_kw2elem].astype(np.float32, copy=False)
-
-        lin_full = self._rx_lin_idx_full
-        lin_cur = np.flatnonzero(self.rx_mask_per_tx[tx_idx].flatten(order="F"))
-        pos = np.searchsorted(lin_full, lin_cur)
-
-        q_rev_used = residual_kw[pos][:, ::-1]
-        q_rev_used = np.cumsum(q_rev_used, axis=1) * self.dt
-        p_src = q_rev_used / self._src_scale
-
-        wf, _ = self._run_sim(
-            self.rx_mask_per_tx[tx_idx],
-            p_src,
-            full_wf=True,
-            sensor_mask_override=self.rx_mask_per_tx[tx_idx],
-        )
-
-        lam += wf[::-1]
-        lam = lam.astype(np.float64)
-
         return lam
 
     # ================================================================

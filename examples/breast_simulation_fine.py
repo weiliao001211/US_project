@@ -2,7 +2,7 @@ import numpy as np
 from scipy.io import loadmat
 from pathlib import Path
 
-from chirpy.geometry import ImageGrid2D, TransducerArray2D
+from chirpy.geometry import ImageGrid2D, TransducerArray2D,GeometryConfigurator
 from chirpy.data import AcquisitionData
 from chirpy.data.image_data import ImageData
 from chirpy.optimization.operator import WaveOperator
@@ -73,6 +73,8 @@ def main() -> None:
     # 3) Ring array + acquisition container
     tx_array = TransducerArray2D.from_ring_array_2D(r=radius, grid=img_grid, n=n_tx)
     acq_geom = AcquisitionData.from_geometry(tx_array=tx_array, grid=img_grid)
+    geom = GeometryConfigurator(img_grid, tx_array)
+    geom.configure_acceptance(delta=0)
 
     # Optional quick view
     # ImageData(array=c_true, tx_array=tx_array, grid=img_grid).show()
@@ -89,11 +91,12 @@ def main() -> None:
 
     op = WaveOperator(
         data=acq_geom,
+        geom_config=geom,
         medium_params=medium,
         record_time=record_time,
         record_full_wf=False,
         use_encoding=False,
-        drop_self_rx=True,
+        # drop_self_rx=True,
         pulse=pulse,
         c_ref=c_ref,
         use_gpu=use_gpu,

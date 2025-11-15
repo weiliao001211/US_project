@@ -11,12 +11,14 @@ Key optimizations:
 from __future__ import annotations
 import numpy as np
 from types import SimpleNamespace
+
 from chirpy.data import AcquisitionData
 from chirpy.optimization.operator.base import Operator
 from chirpy.utils.progress import Progress, ProgressConfig
 from chirpy.optimization.operator.functions.HelmholtzSolver_optimized import (
     HelmholtzSolver_Optimized,
 )
+from chirpy.geometry import GeometryConfigurator
 
 try:
     import cupy as cp
@@ -40,35 +42,67 @@ class HelmholtzOperator_Optimized(Operator):
 
     def __init__(
         self,
-        data: AcquisitionData,
-        f_idx: int,
+        data: AcquisitionData | None,
+        geom: GeometryConfigurator,
+        f_idx: int | None,
         *,
+        freq: float | None = None,
         sign_conv: int,
         pml_alpha: float,
         pml_size: float,
         use_gpu: bool = False,
         progress: Progress | None = None,
-        # Import the optimized solver
-        solver_class=None,  # Will be set to HelmholtzSolver_Optimized
+        solver_class=None,  # will be set to HelmholtzSolver_Optimized
     ):
-        self._freq = float(data.freqs[f_idx])
+        self._geom = geom
+
+        # frequency
+        if freq is not None:
+            self._freq = float(freq)
+        else:
+            if f_idx is None or data is None or not hasattr(data, "freqs"):
+                raise ValueError(
+                    "Either `freq` must be provided, or `data` with `freqs` and `f_idx`."
+                )
+            self._freq = float(data.freqs[f_idx])
+
         self._sign = int(sign_conv)
         self._a0 = float(pml_alpha)
         self._L_PML = float(pml_size)
 
-        # Geometry & indexing
-        self._tx_keep = data.ctx.get("tx_keep", np.arange(data.array.shape[0]))
-        self._mask = data.ctx["elem_mask"][self._tx_keep]
-        self._REC_f = data.array[self._tx_keep, :, f_idx]
+        # Geometry & indexing via GeometryConfigurator
+        tx_keep_elems = self._geom.get_tx_elem_indices()  # element indices for Tx
+        rx_lin_idx = self._geom.get_rx_lin_idx()          # linear grid indices for Rx
+        mask = self._geom.get_elem_mask()                 # (Tx, Rx) boolean
 
-        self._x_idx = data.ctx["x_idx"][self._tx_keep]
-        self._y_idx = data.ctx["y_idx"][self._tx_keep]
-        self._gid = np.asarray(data.ctx["grid_lin_idx"], np.int64)
+        tx_roles = self._geom.get_tx_role_indices()       # role indices (array axis 0)
+        rx_roles = self._geom.get_rx_role_indices()       # role indices (array axis 1)
 
-        img_grid = data.grid
+        # Grid indices for each active transmitter
+        self._x_idx, self._y_idx = self._geom.get_tx_grid_indices()
+
+        # Observed data at this frequency (optional)
+        if data is not None and data.array is not None and f_idx is not None:
+            self._REC_f = self._resolve_observed_data(
+                data.array, f_idx, tx_roles, rx_roles
+            )
+        else:
+            self._REC_f = None
+
+        # Store per-shot metadata
+        self._tx_keep = tx_keep_elems
+        self._mask = mask
+        self._gid = rx_lin_idx.astype(np.int64, copy=False)
+
+        # Grid geometry
+        img_grid = self._geom.grid
         self.ny, self.nx = img_grid.shape
         self._xi, self._yi = img_grid.xi, img_grid.yi
-        self.n_tx, self.n_rx = self._REC_f.shape
+
+        if self._REC_f is not None:
+            self.n_tx, self.n_rx = self._REC_f.shape
+        else:
+            self.n_tx, self.n_rx = mask.shape
 
         # Runtime cache
         self._cache: SimpleNamespace | None = None
@@ -80,6 +114,9 @@ class HelmholtzOperator_Optimized(Operator):
         # Store solver class for later instantiation
         self._solver_class = solver_class
 
+    # ------------------------------------------------------------------ #
+    # public helpers
+    # ------------------------------------------------------------------ #
     def get_field(self, name: str):
         """Read-only access to cached tensors/scalars."""
         if self._cache is None:
@@ -128,6 +165,9 @@ class HelmholtzOperator_Optimized(Operator):
 
         return self._cache.HS.solve(src, adjoint=adjoint, keep_on_gpu=False)
 
+    # ------------------------------------------------------------------ #
+    # internal cache build
+    # ------------------------------------------------------------------ #
     def _build_cache(self, m: np.ndarray) -> None:
         """
         Build solver and compute forward wavefields.
@@ -202,6 +242,40 @@ class HelmholtzOperator_Optimized(Operator):
             out[s, idx] = WF[:, :, s].ravel(order="F")[self._gid[idx]]
         return out
 
+    # ------------------------------------------------------------------ #
+    # metadata helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _resolve_observed_data(
+        array: np.ndarray | None,
+        f_idx: int,
+        tx_idx: np.ndarray,
+        rx_idx: np.ndarray,
+    ) -> np.ndarray | None:
+        if array is None:
+            return None
+
+        arr = np.asarray(array)
+        if arr.size == 0:
+            return None
+
+        # Expect (Tx_full, Rx_full, F) or (Tx_full, Rx_full)
+        if arr.ndim == 3:
+            arr = arr[..., f_idx]
+        elif arr.ndim != 2:
+            raise ValueError("Acquisition array must be 2-D or 3-D")
+
+        if arr.shape[0] <= tx_idx.max() or arr.shape[1] <= rx_idx.max():
+            raise ValueError(
+                "Tx/Rx indices out of range for acquisition array shape."
+            )
+
+        arr = arr[np.ix_(tx_idx, rx_idx)]
+        return arr.astype(np.complex128, copy=False)
+
+    # ------------------------------------------------------------------ #
+    # extra utilities
+    # ------------------------------------------------------------------ #
     def compute_incident_and_total_fields(
         self, c_homogeneous: np.ndarray, c_heterogeneous: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -235,7 +309,6 @@ class HelmholtzOperator_Optimized(Operator):
         vel_inc = 1.0 / np.real(slow_inc)
         atten_inc = np.sign(self._sign) * np.imag(slow_inc) * 2 * np.pi
 
-        # Import optimized solver
         if self._solver_class is None:
             self._solver_class = HelmholtzSolver_Optimized
 
@@ -314,7 +387,6 @@ class HelmholtzOperator_Optimized(Operator):
         # OPTIMIZATION: Compute scattered fields on GPU if available
         if self.canUseGPU and isinstance(incident_fields, cp.ndarray):
             scattered_fields = total_fields - incident_fields
-            # Transfer to CPU
             incident_fields = cp.asnumpy(incident_fields)
             scattered_fields = cp.asnumpy(scattered_fields)
         else:

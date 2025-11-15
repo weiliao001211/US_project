@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from scipy.io import loadmat
 from pathlib import Path
 
-from chirpy.geometry import ImageGrid2D, TransducerArray2D
+from chirpy.geometry import ImageGrid2D, TransducerArray2D, GeometryConfigurator
 from chirpy.data import AcquisitionData, ImageData
 from chirpy.optimization.operator import WaveOperator
 from chirpy.optimization.gradient import AdjointStateGrad
@@ -91,6 +91,7 @@ def main() -> None:
     d_obs, t_vec = dat["array"], dat["time"]
 
     acq_inv = AcquisitionData(array=d_obs, tx_array=tx_array, grid=grid, time=t_vec)
+    geom = GeometryConfigurator(grid, tx_array)
 
     # 3) Medium (fixed for inversion), operator, gradient, LS
     medium = {
@@ -102,11 +103,12 @@ def main() -> None:
     pulse = GaussianModulatedPulse(f0=f0, frac_bw=0.75, amp=1.0)
     op = WaveOperator(
         data=acq_inv,
+        geom_config=geom,
         medium_params=medium,
         record_time=record_time,
         record_full_wf=True,
         use_encoding=USE_ENCODING,
-        drop_self_rx=DROP_SELF_RX,
+        # drop_self_rx=DROP_SELF_RX,
         pulse=pulse,
         c_ref=c_ref,
         use_gpu=use_gpu,
