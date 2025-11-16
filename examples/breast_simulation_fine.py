@@ -33,7 +33,7 @@ progress = Progress(ProgressConfig(enabled=True, backend="tqdm", ncols=90))
 
 # Grid / physics
 xmax = 120e-3
-nx = 480
+nx = ny = 480
 dx = dy = 0.5e-3
 c0_ref = 1500.0
 
@@ -107,7 +107,7 @@ def main() -> None:
     # 5) Simulate and save
     out = op.simulate()
     out_path = (
-        SAVE_DIR / f"d_obs_{Ny}x{Nx}_{dx * 1e3:.1f}mm_{f0 / 1e6:.1f}MHz_{n_tx}.npz"
+        SAVE_DIR / f"d_obs_{ny}x{nx}_{dx * 1e3:.1f}mm_{f0 / 1e6:.1f}MHz_{n_tx}.npz"
     )
     out.save(out_path)
     print(f"[ok] Saved observations → {out_path}")

@@ -129,10 +129,10 @@ class WaveOperator(Operator):
     # ------------------------------------------------------------------
     def __init__(
             self,
-            data: AcquisitionData,
-            medium_params: dict,
+            medium_params: dict ,
             record_time: float,
             *,
+            data: AcquisitionData | None = None,
             geom_config: GeometryConfigurator | None = None,
             tau_max: float = 0.0,
             use_encoding: bool = False,
@@ -156,6 +156,8 @@ class WaveOperator(Operator):
         super().__init__()
 
         if geom_config is None:
+            if data is None:
+                raise ValueError("Either geom_config or data must be provided.")
             geom = GeometryConfigurator(data.grid, data.tx_array)
         else:
             geom = geom_config
@@ -182,7 +184,7 @@ class WaveOperator(Operator):
 
         # ---------- 2. medium ----------------------------------------
         med = dict(medium_params)
-        tx_array = data.tx_array
+        tx_array = self._geom.tx_array
         self.tx_array = tx_array
         self.c_ref = float(c_ref)  # reference sound speed for time step calculation
         c0 = 1500  # default sound speed in water [m/s]
@@ -297,7 +299,7 @@ class WaveOperator(Operator):
         self.obs_data_full: Optional[np.ndarray] = None
 
         # ---------- 10. user-provided obs ----------------------------
-        if data.array is not None:
+        if data is not None and data.array is not None:
             if data.array.shape[0] != self.n_tx:
                 print(
                     f"[TDO-FWD][ERROR] Tx dim mismatch: got {data.array.shape[0]}, expect {self.n_tx}"

@@ -36,8 +36,8 @@ class HelmholtzOperator(Operator):
     # ------------------------------------------------------------------ #
     def __init__(
         self,
-        data: AcquisitionData | None,
-        geom_config: GeometryConfigurator,
+        data: AcquisitionData | None = None,
+        geom_config: GeometryConfigurator | None = None,
         f_idx: int | None = None,
         *,
         freq: float | None = None,
@@ -48,7 +48,12 @@ class HelmholtzOperator(Operator):
         progress: Progress | None = None,
     ):
 
-        self._geom = geom_config
+        if geom_config is None:
+            geom = GeometryConfigurator(data.grid, data.tx_array)
+        else:
+            geom = geom_config
+
+        self._geom = geom
 
         if freq is not None:
             self._freq = float(freq)
