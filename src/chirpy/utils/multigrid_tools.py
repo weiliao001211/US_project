@@ -8,6 +8,10 @@ from chirpy.geometry import ImageGrid2D
 from chirpy.data.image_data import ImageData
 
 
+# ======================================================================
+# 1. Time-domain resampling (Fourier-based, Kaiser/Blackman window)
+# ======================================================================
+
 def _freq_window_1d(n: int, kind: Optional[str] = None, beta: float = 8.0) -> np.ndarray:
     """
     Construct a 1D frequency-domain window.
@@ -85,6 +89,7 @@ def resample_time_series_fourier(
 
     # frequency window
     win = _freq_window_1d(n_freq_old, kind=window, beta=beta)
+
     # reshape window for broadcasting along the chosen axis
     shape_win = [1] * spec.ndim
     shape_win[axis] = n_freq_old
@@ -108,6 +113,10 @@ def resample_time_series_fourier(
     out = np.fft.irfft(spec_new, n=new_nt, axis=axis)
     return out
 
+
+# ======================================================================
+# 2. 2D spatial Fourier interpolation (model restriction / prolongation)
+# ======================================================================
 
 def _spatial_window_1d(n: int, kind: Optional[str] = None, beta: float = 8.0) -> np.ndarray:
     """
@@ -169,9 +178,9 @@ def fourier_interp2d(
     x0_new = nx_new // 2 - nx_min // 2
 
     spec_new_shifted[
-        y0_new : y0_new + ny_min, x0_new : x0_new + nx_min
+        y0_new: y0_new + ny_min, x0_new: x0_new + nx_min
     ] = spec_shifted[
-        y0_old : y0_old + ny_min, x0_old : x0_old + nx_min
+        y0_old: y0_old + ny_min, x0_old: x0_old + nx_min
     ]
 
     # optional frequency smoothing window
@@ -257,6 +266,10 @@ def prolong_model_fourier(
     return fourier_interp2d(model_coarse, (ny_f, nx_f), window=window, beta=beta)
 
 
+# ======================================================================
+# 3. Image-space restriction / prolongation (using ImageData)
+# ======================================================================
+
 def restrict_model_image(
     model_fine: np.ndarray,
     grid_fine: ImageGrid2D,
@@ -283,3 +296,68 @@ def prolong_model_image(
     """
     img = ImageData(model_coarse, grid=grid_coarse)
     return img.downsample_to(new_grid=grid_fine).array.astype(np.float32)
+
+
+# ======================================================================
+# 4. Helpers for multigrid time/pulse handling
+# ======================================================================
+
+def resample_observations_to_operator_time(
+    d_obs: np.ndarray,
+    nt_target: int,
+    window: str = "kaiser",
+    beta: float = 8.0,
+) -> np.ndarray:
+    """
+    Resample observations from a fine time grid to match a target operator Nt.
+
+    Parameters
+    ----------
+    d_obs : ndarray, shape (n_tx, n_rx, nt_fine)
+        Fine-grid observations.
+    nt_target : int
+        Target number of time samples (e.g., operator.nt).
+    window : {"kaiser", "blackman", None}, optional
+        Frequency-domain smoothing window.
+    beta : float, optional
+        Kaiser beta parameter.
+
+    Returns
+    -------
+    d_obs_coarse : ndarray, shape (n_tx, n_rx, nt_target)
+    """
+    return resample_time_series_fourier(
+        d_obs, new_nt=nt_target, axis=-1, window=window, beta=beta
+    )
+
+
+def resample_pulse_to_operator_time(
+    pulse_fine: np.ndarray,
+    nt_target: int,
+    window: str = "kaiser",
+    beta: float = 8.0,
+) -> np.ndarray:
+    """
+    Resample a 1D pulse waveform from a fine time grid to a target Nt.
+
+    Parameters
+    ----------
+    pulse_fine : ndarray, shape (nt_fine,)
+        Pulse samples on the fine time grid.
+    nt_target : int
+        Target number of samples (e.g., operator.nt).
+    window : {"kaiser", "blackman", None}, optional
+        Frequency-domain smoothing window.
+    beta : float, optional
+        Kaiser beta parameter.
+
+    Returns
+    -------
+    pulse_coarse : ndarray, shape (nt_target,)
+    """
+    pulse_fine = np.asarray(pulse_fine, dtype=np.float64)
+    pulse_fine = pulse_fine.reshape(1, 1, -1)
+    pulse_coarse = resample_time_series_fourier(
+        pulse_fine, new_nt=nt_target, axis=-1, window=window, beta=beta
+    )
+    return pulse_coarse.reshape(-1).astype(np.float64)
