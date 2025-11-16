@@ -59,6 +59,7 @@ src/chirpy/signals/__init__.py
 src/chirpy/signals/pulse.py
 src/chirpy/utils/__init__.py
 src/chirpy/utils/animate_results.py
+src/chirpy/utils/dtft_wavefield.py
 src/chirpy/utils/paths.py
 src/chirpy/utils/progress.py
 src/chirpy/utils/visualizer_multi_mode.py
