@@ -1,5 +1,5 @@
 """
-UFWI.processors.time_window
+chirpy.processors.time_window
 ==================================
 
 Apply a "Gaussian-shaped" taper to each time trace to suppress
@@ -12,6 +12,7 @@ import numpy as np
 
 from chirpy.processors.base import BaseProcessor
 from chirpy.data import AcquisitionData
+from chirpy.geometry import GeometryConfigurator
 
 
 class GaussianTimeWindow(BaseProcessor):
@@ -41,12 +42,14 @@ class GaussianTimeWindow(BaseProcessor):
         pre_pct: float = 5.0,
         post_pct: float | float("inf") = np.inf,
         c0: float | None = None,
+        geom_config: GeometryConfigurator | None = None,
     ) -> None:
         if pre_pct <= 0:
             raise ValueError("`pre_pct` must be positive.")
         self._pre = pre_pct / 100.0
         self._post = float(post_pct)
         self.c0 = None if c0 is None else float(c0)
+        self.geom_config = geom_config
 
     @staticmethod
     def _subplus(x: np.ndarray) -> np.ndarray:
@@ -59,12 +62,20 @@ class GaussianTimeWindow(BaseProcessor):
         # get TOF（Rx, Tx）
         if data.time is None:
             raise ValueError("AcquisitionData.time is required for TimeWindow.")
-        if data.tx_array is None or data.array is None:
-            raise ValueError("AcquisitionData missing tx_array or array.")
+        if data.array is None:
+            raise ValueError("AcquisitionData missing array.")
+        if data.tx_array is None:
+            if self.geom_config is None:
+                raise ValueError(
+                    "tx_array is required for TimeWindow."
+                )
+            tx_array = self.geom_config.tx_array
+        else:
+            tx_array = data.tx_array
 
         c0_eff = self.c0 if self.c0 is not None else data.c0
         print(f"Using effective sound speed: {c0_eff} m/s")
-        tof = data.tx_array.geometric_tofs(c0_eff)  # (N, N)
+        tof = tx_array.geometric_tofs(c0_eff)  # (N, N)
         tau_max = float(tof.max())
         tau_pre = self._pre * tau_max
         tau_post = self._post * tau_max

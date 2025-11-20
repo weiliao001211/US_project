@@ -1,11 +1,11 @@
 """
-UFWI.processors.dtft
+chirpy.processors.dtft
 =========================================
 
 Implements :class:`DTFT`, which performs the discrete-time
 Fourier transform (DTFT) at user-specified frequencies.
 
-Because the preceding :class:`~UFWI.processors.TimeWindow`
+Because the preceding :class:`~chirpy.processors.TimeWindow`
 has already tapered the traces, the transform can be applied directly.
 """
 

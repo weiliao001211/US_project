@@ -1,9 +1,9 @@
 """
-UFWI.pipeline
+chirpy.pipeline
 ====================
 
 Defines :class:`Pipeline`, a thin convenience wrapper that executes a list of
-processors in sequence.  The same :class:`~UFWI.data.AcquisitionData`
+processors in sequence.  The same :class:`~chirpy.data.AcquisitionData`
 instance is threaded through all stages and returned at the end, so memory
 usage never grows with the pipeline depth.
 """
@@ -65,7 +65,7 @@ class Pipeline:
         Parameters
         ----------
         data
-            The one and only :class:`~UFWI.data.AcquisitionData`
+            The one and only :class:`~chirpy.data.AcquisitionData`
             instance flowing through the pipeline.
         ctx
             Optional dictionary merged into ``data.ctx`` *before* the first

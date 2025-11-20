@@ -7,7 +7,6 @@ import numpy as np
 # Progress bar (works in terminals & notebooks)
 from tqdm.auto import tqdm
 
-# --- chirpy imports (UFWI -> chirpy) ---
 from chirpy.geometry import ImageGrid2D, TransducerArray2D
 from chirpy.data import AcquisitionData
 from chirpy.data.image_data import ImageData
